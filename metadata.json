@@ -1,0 +1,6 @@
+{
+  "name": "Water Plant AI",
+  "description": "Intelligent Water Plant Monitoring, Prediction, and Decision Support System with real-time IoT ingestion, ML anomaly detection, and automated orchestration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

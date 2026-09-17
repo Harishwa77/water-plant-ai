@@ -1,0 +1,96 @@
+{
+  "name": "Water Plant AI - Scheduled Diagnostics & Incident Dispatch",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger (Every 5m)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*) as active_alerts, MAX(created_at) as latest_alert \nFROM alerts \nWHERE status = 'ACTIVE' AND severity = 'CRITICAL';"
+      },
+      "id": "postgres-query-alerts",
+      "name": "PostgreSQL: Check Critical Alerts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ Number($json.active_alerts) }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "if-has-critical",
+      "name": "IF Critical Alerts > 0",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  summary: `Automated Water Plant AI Diagnostic: Found ${$json.active_alerts} active critical incident(s). Immediate operator inspection recommended.`,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "id": "code-format-summary",
+      "name": "Format Incident Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (Every 5m)": {
+      "main": [
+        [
+          {
+            "node": "PostgreSQL: Check Critical Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PostgreSQL: Check Critical Alerts": {
+      "main": [
+        [
+          {
+            "node": "IF Critical Alerts > 0",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Critical Alerts > 0": {
+      "main": [
+        [
+          {
+            "node": "Format Incident Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

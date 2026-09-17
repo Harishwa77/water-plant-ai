@@ -1,0 +1,206 @@
+{
+  "name": "Water Plant AI - Ingestion & Prediction Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upload",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-upload",
+      "name": "Webhook Ingestion (/upload)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and validate incoming payload\nconst body = $input.item.json.body || $input.item.json;\n\nconst ph = Number(body.ph ?? 7.4);\nconst turbidity = Number(body.turbidity ?? 1.5);\nconst tds = Number(body.tds ?? 320);\nconst temperature = Number(body.temperature ?? 24.5);\nconst chlorine = Number(body.chlorine ?? 0.8);\nconst flow_rate = Number(body.flow_rate ?? 1200);\nconst pump_status = String(body.pump_status || 'ON');\nconst production_volume = Number(body.production_volume ?? 5000);\nconst timestamp = body.timestamp || new Date().toISOString();\n\nreturn {\n  timestamp,\n  ph,\n  turbidity,\n  tds,\n  temperature,\n  chlorine,\n  flow_rate,\n  pump_status,\n  production_volume\n};"
+      },
+      "id": "code-normalize",
+      "name": "Normalize Telemetry Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO water_readings (timestamp, ph, turbidity, tds, temperature, chlorine, flow_rate, pump_status, production_volume)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\nRETURNING id, timestamp, ph, turbidity, tds, temperature, chlorine, flow_rate, pump_status, production_volume;",
+        "additionalFields": {
+          "queryParams": "={{ [ $json.timestamp, $json.ph, $json.turbidity, $json.tds, $json.temperature, $json.chlorine, $json.flow_rate, $json.pump_status, $json.production_volume ] }}"
+        }
+      },
+      "id": "postgres-insert-reading",
+      "name": "PostgreSQL: Insert Reading",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ml-service:8000/predict",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"ph\": {{ $json.ph }},\n  \"turbidity\": {{ $json.turbidity }},\n  \"tds\": {{ $json.tds }},\n  \"temperature\": {{ $json.temperature }},\n  \"chlorine\": {{ $json.chlorine }},\n  \"flow_rate\": {{ $json.flow_rate }},\n  \"pump_status\": \"{{ $json.pump_status }}\",\n  \"production_volume\": {{ $json.production_volume }}\n}",
+        "options": {}
+      },
+      "id": "http-ml-service",
+      "name": "HTTP: Call FastAPI ML Service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.risk_score }}",
+              "operation": "largerEqual",
+              "value2": 40
+            }
+          ]
+        }
+      },
+      "id": "if-risk-threshold",
+      "name": "IF Risk >= 40% (Anomaly)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO alerts (reading_id, severity, type, message, status)\nVALUES ($1, $2, $3, $4, 'ACTIVE')\nRETURNING id;",
+        "additionalFields": {
+          "queryParams": "={{ [ $('PostgreSQL: Insert Reading').item.json.id, $json.risk_score >= 70 ? 'CRITICAL' : 'WARNING', 'ANOMALY_DETECTED', $json.reason ] }}"
+        }
+      },
+      "id": "postgres-insert-alert",
+      "name": "PostgreSQL: Insert Alert",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO predictions (reading_id, prediction, water_quality, risk_score, anomaly, confidence, reason, recommendation)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nRETURNING id;",
+        "additionalFields": {
+          "queryParams": "={{ [ $('PostgreSQL: Insert Reading').item.json.id, $json.prediction, $json.water_quality, $json.risk_score, $json.anomaly, $json.confidence, $json.reason, $json.recommendation ] }}"
+        }
+      },
+      "id": "postgres-insert-prediction",
+      "name": "PostgreSQL: Insert Prediction",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Water telemetry processed by n8n orchestrator.\",\n  \"reading_id\": \"{{ $('PostgreSQL: Insert Reading').item.json.id }}\",\n  \"prediction\": {\n    \"prediction\": \"{{ $('HTTP: Call FastAPI ML Service').item.json.prediction }}\",\n    \"water_quality\": \"{{ $('HTTP: Call FastAPI ML Service').item.json.water_quality }}\",\n    \"risk_score\": {{ $('HTTP: Call FastAPI ML Service').item.json.risk_score }},\n    \"anomaly\": {{ $('HTTP: Call FastAPI ML Service').item.json.anomaly }},\n    \"confidence\": {{ $('HTTP: Call FastAPI ML Service').item.json.confidence }},\n    \"reason\": \"{{ $('HTTP: Call FastAPI ML Service').item.json.reason }}\",\n    \"recommendation\": \"{{ $('HTTP: Call FastAPI ML Service').item.json.recommendation }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "respond-to-webhook",
+      "name": "Respond to Webhook (200 OK)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Ingestion (/upload)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Telemetry Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Telemetry Payload": {
+      "main": [
+        [
+          {
+            "node": "PostgreSQL: Insert Reading",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PostgreSQL: Insert Reading": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Call FastAPI ML Service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Call FastAPI ML Service": {
+      "main": [
+        [
+          {
+            "node": "IF Risk >= 40% (Anomaly)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "PostgreSQL: Insert Prediction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Risk >= 40% (Anomaly)": {
+      "main": [
+        [
+          {
+            "node": "PostgreSQL: Insert Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond to Webhook (200 OK)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PostgreSQL: Insert Alert": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook (200 OK)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PostgreSQL: Insert Prediction": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook (200 OK)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
